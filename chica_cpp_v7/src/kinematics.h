@@ -45,25 +45,34 @@ struct Kinematics {
         hip[5] = Vec3( hx,  -hy, hz);   // R3 rear-right
     }
 
-    // ── Neutral stance — v3: radius=220, no elongation, LEG_SITTING_Z=-40 ──────
+    // ── Neutral stance — matches original app's standing position ───────────────
+    // Original app (w8.e + p3.a.k): neutral foot XY uses leg_radius with
+    // elongation applied to corner legs, and Z = LEG_SITTING_Z − body_lift
+    // (body is raised by body_lift when standing, lowering feet in body frame).
     void build_neutral() {
         double a_rad = cfg->active_mode().corner_angle * M_PI / 180.0;
         double c = std::cos(a_rad), s = std::sin(a_rad);
-        double r  = cfg->active_mode().leg_radius;   // 220mm
-        double fz = cfg->leg_sitting_z;               // -40mm
+        double r    = cfg->active_mode().leg_radius;    // 220mm
+        double elon = cfg->active_mode().elongation;    // 1.15
+        double lift = cfg->active_mode().body_lift;     // 40mm
+        double fz   = cfg->leg_sitting_z - lift;        // -40 − 40 = -80mm
 
         Vec3 raw[6] = {
-            {-c,  s, 0},   // L1
-            {-1,  0, 0},   // L2
-            {-c, -s, 0},   // L3
-            { c,  s, 0},   // R1
-            { 1,  0, 0},   // R2
-            { c, -s, 0},   // R3
+            {-c,  s, 0},   // L1  (corner)
+            {-1,  0, 0},   // L2  (middle)
+            {-c, -s, 0},   // L3  (corner)
+            { c,  s, 0},   // R1  (corner)
+            { 1,  0, 0},   // R2  (middle)
+            { c, -s, 0},   // R3  (corner)
         };
+        // Corner legs (0,2,3,5) get elongation; middle legs (1,4) do not
+        // — matches w8.e() which skips h(elongation) for legs 1 and 4.
+        double leg_r[6] = { r*elon, r, r*elon, r*elon, r, r*elon };
+
         for (int i = 0; i < 6; i++) {
             hip_dir[i] = raw[i];
-            neutral[i] = Vec3(hip[i].x + raw[i].x * r,
-                              hip[i].y + raw[i].y * r, fz);
+            neutral[i] = Vec3(hip[i].x + raw[i].x * leg_r[i],
+                              hip[i].y + raw[i].y * leg_r[i], fz);
         }
     }
 
