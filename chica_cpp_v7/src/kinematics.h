@@ -152,12 +152,10 @@ struct Kinematics {
         int raw   = (int)(adj * scale);
         if (right) raw = -raw;
         int pwm   = raw + mid;
-        // Match original app (c2/n8.d): no calibration-range clamp.
-        // The original app intentionally sends values outside [min_us, max_us]
-        // — e.g. tibia needs ~2100+µs at standing height. The RP2040 firmware
-        // passes these through and servos physically stop at their travel limit.
-        // Only guard against truly invalid pulse widths.
-        return std::clamp(pwm, 500, 2500);
+        // Clamp to [min(cal), max(cal)] per Java RobotState.angleToPwm.
+        int lo = std::min(cal.min_us, cal.max_us);
+        int hi = std::max(cal.min_us, cal.max_us);
+        return std::clamp(pwm, lo, hi);
     }
 
     // ── Foot → 3 PWM values ───────────────────────────────────────────────────

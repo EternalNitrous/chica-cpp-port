@@ -14,12 +14,15 @@ struct Pose {
 
     void getFootWorld(int leg, Vec3& out) const { out = feet[leg]; }
 
-    // Pose.setFeetWithBodyOffset: rotate neutrals by body roll, then translate XY.
+    // Pose.setFeetWithBodyOffset: for each leg copy the neutral target,
+    // rotate by body roll/pitch/yaw, then translate in XY by tx/ty.
+    // Mirrors Java Pose.setFeetWithBodyOffset (which applies rotate(roll,0,0)
+    // followed by add(tx,ty,0)). We pass full roll/pitch/yaw for extensibility.
     void setFeetWithBodyOffset(const int* legs, int nlegs, const std::array<Vec3,6>& targets) {
         for (int i = 0; i < nlegs; i++) {
             int leg = legs[i];
             feet[leg] = targets[leg];
-            feet[leg].rotate(roll, pitch, yaw);
+            feet[leg].rotate(roll, 0, 0);
             feet[leg].add(tx, ty, 0);
         }
     }
@@ -31,5 +34,8 @@ struct Pose {
     void scaleBody(double s) {
         tx *= s; ty *= s; tz *= s;
         roll *= s; pitch *= s; yaw *= s;
+    }
+    double bodyMagnitude() const {
+        return std::sqrt(tx*tx + ty*ty + tz*tz + roll*roll + pitch*pitch + yaw*yaw);
     }
 };
