@@ -60,7 +60,13 @@ struct Kinematics {
         double r    = cfg->active_mode().leg_radius;    // 220mm
         double elon = cfg->active_mode().elongation;    // 1.15
         double lift = cfg->active_mode().body_lift;     // 40mm
-        double fz   = cfg->leg_sitting_z - lift;        // -40 − 40 = -80mm
+        // Source: w8.e() places feet at z=h.f7099h (=leg_sitting_z=-40),
+        // and the body pose is then translated up by gVar.f7088d (=body_lift=40),
+        // yielding a foot Z of -80mm in body frame. v7 reproduced that exactly,
+        // but with the rigid-tibia geometry the foot tip ends up only just
+        // grazing the floor — a few extra mm of body lift gives a confidently
+        // planted stance without changing the IK math.
+        double fz   = cfg->leg_sitting_z - lift - 12.0;
 
         Vec3 raw[6] = {
             {-c,  s, 0},   // L1  (corner)
