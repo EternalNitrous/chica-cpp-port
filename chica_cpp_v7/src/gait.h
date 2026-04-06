@@ -27,8 +27,11 @@ static constexpr double SWING_FRAC = 0.5;
 static constexpr int LEG_ORDER[6] = {0, 3, 1, 4, 2, 5};
 
 // Stride as fraction of leg_radius. Foot targets neutral ± (radius * STRIDE_FRAC).
-// 0.20 → ~44mm at r=220. Conservative and safe for first bring-up.
-static constexpr double STRIDE_FRAC = 0.20;
+// Original p3.a.g uses j.f7127f.y = 90mm forward stride at vel=1 (≈ radius*0.41).
+// v7 was at 0.20 (~44mm) which made forward walking nearly invisible compared
+// to the rotation drift caused by stance-side foot pivot — making "walk" look
+// like a slow spin. 0.30 gives ~66mm which matches the source feel.
+static constexpr double STRIDE_FRAC = 0.30;
 
 // Minimum XY clearance between feet (mm²) — 70mm from source (70²=4900)
 static constexpr double MIN_CLEAR2 = 4900.0;
@@ -137,7 +140,11 @@ struct GaitEngine {
         // that pure-rotation still drives a reasonable step frequency.
         double drive   = std::max(std::clamp(speed_mag, 0.0, 1.0),
                                   std::clamp(rot_mag, 0.0, 1.0));
-        double period_ms = (2000.0 + (600.0 - 2000.0) * drive) / speed_factor;
+        // Match original p3.a.g(): i13 = lerp(2.0, 0.5, |vel|) / r5.b(mode=5)
+        //   = (2 - 1.5*drive) / 0.5  →  4000ms..1000ms full period.
+        // v7 previously used 2000..600 ms which was nearly 2× too fast,
+        // causing the swing to outrun the body translation and look spinny.
+        double period_ms = (4000.0 - 3000.0 * drive) / speed_factor;
         double stance_ms = period_ms * (1.0 - SWING_FRAC);
 
         // ── Translation stride and speed ──────────────────────────────────────
@@ -152,7 +159,12 @@ struct GaitEngine {
         // Rotation is fully independent from translation so that pure-rotate
         // (vel_r only, no vel_x/vel_y) actually turns the body.
         // Max angular stride per half-step: 10 degrees at vel_r=1.
-        static constexpr double MAX_ROT_STEP = 10.0 * M_PI / 180.0;
+        // Original spin gait sweeps each tripod through ~22°/swing at full
+        // input. v7's 10° was so small that pure rotation hardly turned the
+        // body — the linear stance drift (none here) plus tiny pivot looked
+        // like an awkward in-place walk. 22° matches the visible spin rate
+        // of the original app at full stick.
+        static constexpr double MAX_ROT_STEP = 22.0 * M_PI / 180.0;
         double rot_clamped = std::clamp(rot_mag, 0.0, 1.0);
         double rot_stride  = rot_clamped * MAX_ROT_STEP;            // radians
         double rot_rate    = (rot_stride > 1e-9) ? (2.0 * rot_stride) / (stance_ms + 1e-9) : 0.0;
