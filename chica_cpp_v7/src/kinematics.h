@@ -45,10 +45,15 @@ struct Kinematics {
         hip[5] = Vec3( hx,  -hy, hz);   // R3 rear-right
     }
 
-    // ── Neutral stance — matches original app's standing position ───────────────
-    // Original app (w8.e + p3.a.k): neutral foot XY uses leg_radius with
-    // elongation applied to corner legs, and Z = LEG_SITTING_Z − body_lift
-    // (body is raised by body_lift when standing, lowering feet in body frame).
+    // ── Neutral stance — matches original app (w8.e + p3.a.k) ──────────────────
+    // The original app stores neutral foot positions relative to BODY CENTER
+    // (NOT relative to hip). w8.e() computes: direction * radius [* elongation]
+    // with Z = LEG_SITTING_Z.  When standing, body_lift raises the body,
+    // making feet appear at Z = LEG_SITTING_Z − body_lift in body frame.
+    //
+    // The IK (j.e) then subtracts the hip position from these body-center
+    // positions to get the foot vector relative to each hip.  This means
+    // leg_radius is measured from body center, NOT from the hip joint.
     void build_neutral() {
         double a_rad = cfg->active_mode().corner_angle * M_PI / 180.0;
         double c = std::cos(a_rad), s = std::sin(a_rad);
@@ -71,8 +76,9 @@ struct Kinematics {
 
         for (int i = 0; i < 6; i++) {
             hip_dir[i] = raw[i];
-            neutral[i] = Vec3(hip[i].x + raw[i].x * leg_r[i],
-                              hip[i].y + raw[i].y * leg_r[i], fz);
+            // NO hip offset — positions are relative to body center, not hip
+            neutral[i] = Vec3(raw[i].x * leg_r[i],
+                              raw[i].y * leg_r[i], fz);
         }
     }
 
@@ -140,11 +146,12 @@ struct Kinematics {
         int raw   = (int)(adj * scale);
         if (right) raw = -raw;
         int pwm   = raw + mid;
-        // Clamp to calibrated range — prevents sending out-of-range values
-        // that would drive servos past their physical stops
-        int lo = std::min(cal.min_us, cal.max_us);
-        int hi = std::max(cal.min_us, cal.max_us);
-        return std::clamp(pwm, lo, hi);
+        // Match original app (c2/n8.d): no calibration-range clamp.
+        // The original app intentionally sends values outside [min_us, max_us]
+        // — e.g. tibia needs ~2100+µs at standing height. The RP2040 firmware
+        // passes these through and servos physically stop at their travel limit.
+        // Only guard against truly invalid pulse widths.
+        return std::clamp(pwm, 500, 2500);
     }
 
     // ── Foot → 3 PWM values ───────────────────────────────────────────────────

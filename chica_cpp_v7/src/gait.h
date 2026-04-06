@@ -119,7 +119,8 @@ struct GaitEngine {
 
     void tick(double dt_ms, const Kinematics& kin, const GaitMode& mode) {
         double speed_mag = std::sqrt(vel_x*vel_x + vel_y*vel_y);
-        bool moving = (speed_mag > 0.02 || std::abs(vel_r) > 0.02);
+        double rot_mag   = std::abs(vel_r);
+        bool moving = (speed_mag > 0.02 || rot_mag > 0.02);
 
         if (!moving) {
             double alpha = std::clamp(dt_ms / 150.0, 0.0, 1.0);
@@ -132,44 +133,46 @@ struct GaitEngine {
         }
 
         // ── Gait timing ───────────────────────────────────────────────────────
-        double clamped = std::clamp(speed_mag, 0.0, 1.0);
-        double period_ms = (2000.0 + (600.0 - 2000.0) * clamped) / speed_factor;
-
-        // ── Stride and body speed ─────────────────────────────────────────────
-        // stride  = how far foot targets ahead of neutral
-        // body_spd = rate at which body frame advances over grounded feet
-        //
-        // Constraint: body_spd * stance_ms == 2 * stride
-        // → foot sweeps from (neutral + stride) to (neutral - stride) in one stance
-        double stride    = clamped * mode.leg_radius * STRIDE_FRAC;
+        // Use the larger of translation and rotation input for gait speed so
+        // that pure-rotation still drives a reasonable step frequency.
+        double drive   = std::max(std::clamp(speed_mag, 0.0, 1.0),
+                                  std::clamp(rot_mag, 0.0, 1.0));
+        double period_ms = (2000.0 + (600.0 - 2000.0) * drive) / speed_factor;
         double stance_ms = period_ms * (1.0 - SWING_FRAC);
-        double body_spd  = (2.0 * stride) / (stance_ms + 1e-9);   // mm/ms
+
+        // ── Translation stride and speed ──────────────────────────────────────
+        double trans_clamped = std::clamp(speed_mag, 0.0, 1.0);
+        double stride    = trans_clamped * mode.leg_radius * STRIDE_FRAC;
+        double body_spd  = (stride > 1e-9) ? (2.0 * stride) / (stance_ms + 1e-9) : 0.0;
 
         double dir_x = (speed_mag > 1e-9) ? vel_x / speed_mag : 0.0;
         double dir_y = (speed_mag > 1e-9) ? vel_y / speed_mag : 0.0;
 
-        // ── Stance: slide grounded feet backward in body frame ────────────────
-        // THE locomotion step: a foot fixed in world space appears to move
-        // backward in body frame as the body translates forward over it.
-        // Without this, coxa never sweeps and the robot goes nowhere.
+        // ── Rotation stride and speed ─────────────────────────────────────────
+        // Rotation is fully independent from translation so that pure-rotate
+        // (vel_r only, no vel_x/vel_y) actually turns the body.
+        // Max angular stride per half-step: 10 degrees at vel_r=1.
+        static constexpr double MAX_ROT_STEP = 10.0 * M_PI / 180.0;
+        double rot_clamped = std::clamp(rot_mag, 0.0, 1.0);
+        double rot_stride  = rot_clamped * MAX_ROT_STEP;            // radians
+        double rot_rate    = (rot_stride > 1e-9) ? (2.0 * rot_stride) / (stance_ms + 1e-9) : 0.0;
+        double rot_sign    = (vel_r >= 0.0) ? 1.0 : -1.0;
+
+        // ── Stance: slide and rotate grounded feet ────────────────────────────
         double move_x = dir_x * body_spd * dt_ms;
         double move_y = dir_y * body_spd * dt_ms;
 
-        // Rotation: feet orbit around body centre
-        double rot = 0.0;
-        if (std::abs(vel_r) > 0.01) {
-            // Keep rotation proportional to translation speed so combined
-            // motion feels consistent. Scale so vel_r=1 gives noticeable turn.
-            double avg_r = mode.leg_radius * 0.55;  // approx hip radius from centre
-            rot = vel_r * body_spd * dt_ms / avg_r;  // radians this tick
-        }
-        double cr = std::cos(rot), sr = std::sin(rot);
+        // Rotation per tick: positive = CCW in body frame = CW body rotation
+        double rot_tick = rot_sign * rot_rate * dt_ms;
+        double cr = std::cos(rot_tick), sr = std::sin(rot_tick);
 
         for (int i = 0; i < 6; i++) {
             if (liftoff[i].has_value()) continue;
+            // Translation: body moves forward → feet slide backward
             foot_world[i].x -= move_x;
             foot_world[i].y -= move_y;
-            if (std::abs(rot) > 1e-9) {
+            // Rotation: body rotates CW → feet orbit CCW in body frame
+            if (std::abs(rot_tick) > 1e-9) {
                 double fx = foot_world[i].x, fy = foot_world[i].y;
                 foot_world[i].x = fx*cr - fy*sr;
                 foot_world[i].y = fx*sr + fy*cr;
@@ -189,20 +192,23 @@ struct GaitEngine {
                 if (!liftoff[leg].has_value()) {
                     liftoff[leg] = foot_world[leg];
 
-                    // Target: neutral + stride ahead in travel direction
+                    // Target: neutral + translation stride + rotation offset
                     Vec3 tgt = kin.neutral[leg];
+
+                    // Translation: place foot ahead in travel direction
                     tgt.x += dir_x * stride;
                     tgt.y += dir_y * stride;
 
-                    // Rotation offset
-                    if (std::abs(vel_r) > 0.01) {
-                        double hx = kin.hip[leg].x, hy = kin.hip[leg].y;
-                        double hr = std::sqrt(hx*hx + hy*hy);
-                        if (hr > 1e-9) {
-                            double rot_off = vel_r * mode.leg_radius * STRIDE_FRAC * 0.5;
-                            tgt.x += (-hy / hr) * rot_off;
-                            tgt.y += ( hx / hr) * rot_off;
-                        }
+                    // Rotation: rotate neutral around body centre by -rot_stride
+                    // (opposite sign from stance rotation so foot lands "ahead"
+                    // and sweeps through neutral during stance, matching how
+                    // translation places the foot at neutral+stride).
+                    if (rot_stride > 1e-9) {
+                        double ra = -rot_sign * rot_stride;
+                        double rc = std::cos(ra), rs = std::sin(ra);
+                        double nx = kin.neutral[leg].x, ny = kin.neutral[leg].y;
+                        tgt.x += (nx*rc - ny*rs) - nx;
+                        tgt.y += (nx*rs + ny*rc) - ny;
                     }
 
                     // Collision guard
@@ -224,7 +230,6 @@ struct GaitEngine {
                     foot_world[leg] = target[leg];
                     liftoff[leg]    = std::nullopt;
                 }
-                // Stance sliding handled above — nothing more needed here
             }
         }
     }
